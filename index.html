@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Blog-infused Notebook</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background-color: #f0f0f0;
+        }
+        h1 {
+            color: #333;
+        }
+        label, input, button {
+            width: 100%;
+            max-width: 400px;
+            margin: 10px 0;
+        }
+        input {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #video {
+            width: 100%;
+            max-width: 1280px;
+            height: auto;
+            border: 1px solid black;
+            margin: 10px 0;
+        }
+        #photos {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        #photos img {
+            width: 160px;
+            height: 120px;
+            margin: 5px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        @media (max-width: 600px) {
+            input, button {
+                max-width: 100%;
+            }
+            #photos img {
+                width: 100px;
+                height: 75px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Blog-infused Notebook</h1>
+    <label>OpenAI API Key:</label>
+    <input type="password" id="openai_api_key" size="50">
+
+    <label>Username:</label>
+    <input type="text" id="wf_username">
+    <label>Password:</label>
+    <input type="password" id="wf_password">
+
+    <video id="video" autoplay></video>
+    <button id="capture">Capture Photo</button>
+
+    <input type="file" id="fileUpload" accept="image/*" multiple>
+    <label for="fileUpload" class="upload-label">Or Upload Images</label>
+
+    <div id="photos"></div>
+
+    <button id="process">Process and Publish</button>
+
+    <script>
+        const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+        const WRITEFREELY_API_BASE_URL = 'https://tfidfwastaken-corsproxyforblogapi.web.val.run';
+        const WRITEFREELY_BLOG_BASE_URL = 'https://tfidfwastaken-corsproxyforblogapi.web.val.run';
+
+        let video = document.getElementById('video');
+        let fileUpload = document.getElementById('fileUpload');
+        let captureButton = document.getElementById('capture');
+        let processButton = document.getElementById('process');
+        let photosDiv = document.getElementById('photos');
+        let photos = [];
+
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                video.srcObject = stream;
+            })
+            .catch(err => {
+                console.error("Error accessing the camera: " + err);
+                alert("Error accessing the camera: " + err);
+            });
+
+        captureButton.addEventListener('click', function () {
+            let canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            let context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            let imgDataUrl = canvas.toDataURL('image/png');
+
+            // Add image to photos array
+            photos.push(imgDataUrl);
+
+            // Display thumbnail
+            let img = document.createElement('img');
+            img.src = imgDataUrl;
+            photosDiv.appendChild(img);
+        });
+
+        fileUpload.addEventListener('change', function(event) {
+            let files = event.target.files;
+            for (let file of files) {
+                let reader = new FileReader();
+                reader.onload = function(e) {
+                    let imgDataUrl = e.target.result;
+                    photos.push(imgDataUrl);
+                    
+                    // Display thumbnail
+                    let img = document.createElement('img');
+                    img.src = imgDataUrl;
+                    photosDiv.appendChild(img);
+                }
+                reader.readAsDataURL(file);
+            }
+        });
+
+        processButton.addEventListener('click', async function () {
+            let openai_api_key = document.getElementById('openai_api_key').value.trim();
+            let wf_username = document.getElementById('wf_username').value.trim();
+            let wf_password = document.getElementById('wf_password').value;
+
+            if (!openai_api_key || !wf_username || !wf_password) {
+                alert('Please enter OpenAI API key, WriteFreely username, and password.');
+                return;
+            }
+
+            if (photos.length === 0) {
+                alert('No photos captured.');
+                return;
+            }
+
+            let fullText = '';
+
+            for (let i = 0; i < photos.length; i++) {
+                let imageDataUrl = photos[i]; // This is a data URL: 'data:image/png;base64,...'
+
+                // Send to OpenAI API
+                let text = await sendImageToOpenAI(imageDataUrl, openai_api_key);
+                if (text === null) {
+                    alert('Error processing image with OpenAI API.');
+                    return;
+                }
+                fullText += text + '\n\n';
+            }
+
+            // Now publish to WriteFreely
+            await publishToWriteFreely(fullText, wf_username, wf_password);
+        });
+
+        async function sendImageToOpenAI(imageDataUrl, apiKey) {
+            // Prepare the messages
+            let messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": `You will be given a photo of handwritten text in a notebook.
+                            Please read the handwriting and provide only the text verbatim. Make sure the paragraphs are formatted sensibly, avoid new lines mid-sentence.
+                            Do not yap, and do not add any commentary.
+                            Put <...> on unclear parts of the text.`
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": imageDataUrl // data URL with base64 image data
+                            }
+                        }
+                    ]
+                }
+            ];
+
+            let requestData = {
+                "model": "gpt-4o",
+                "messages": messages,
+                "max_tokens": 1000
+            };
+
+            try {
+                let response = await fetch(OPENAI_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + apiKey
+                    },
+                    body: JSON.stringify(requestData)
+                });
+
+                if (response.ok) {
+                    let data = await response.json();
+                    let text = data.choices[0].message.content;
+                    return text;
+                } else {
+                    console.error('Error from OpenAI API:', response.status, response.statusText);
+                    let errorData = await response.text();
+                    console.error(errorData);
+                    alert('Error from OpenAI API: ' + response.statusText);
+                    return null;
+                }
+            } catch (error) {
+                console.error('Network error:', error);
+                alert('Network error: ' + error);
+                return null;
+            }
+        }
+
+        async function publishToWriteFreely(content, username, password) {
+            // First, authenticate to get the access token
+            let loginResponse = await fetch(`${WRITEFREELY_API_BASE_URL}/api/auth/login`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ alias: username, pass: password })
+            });
+
+            if (!loginResponse.ok) {
+                console.error('Login failed:', loginResponse.status, loginResponse.statusText);
+                let errorData = await loginResponse.json();
+                console.error(errorData);
+                alert('Login failed: ' + errorData.error_msg);
+                return;
+            }
+
+            let loginData = await loginResponse.json();
+            let accessToken = loginData.data.access_token;
+
+            let [title, ...contentArr] = content.split('\n');
+            content = contentArr.join('\n');
+
+            // Now publish the post
+            let postResponse = await fetch(`${WRITEFREELY_API_BASE_URL}/api/posts`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Token ' + accessToken
+                },
+                body: JSON.stringify({
+                    body: content,
+                    title: title,
+                    tags: ["handwritten"]
+                })
+            });
+
+            if (!postResponse.ok) {
+                console.error('Error publishing post:', postResponse.status, postResponse.statusText);
+                let errorData = await postResponse.json();
+                console.error(errorData);
+                alert('Error publishing post: ' + errorData.error_msg);
+                return;
+            }
+
+            let postData = await postResponse.json();
+            let postUrl = `${WRITEFREELY_BLOG_BASE_URL}/${postData.data.id}`;
+            alert('Post published successfully! ' + postUrl);
+        }
+    </script>
+</body>
+</html>
